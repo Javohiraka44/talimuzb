@@ -1,55 +1,94 @@
-import os
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import google.generativeai as genai
+import sqlite3
+import threading
+import telebot
+from flask import Flask, render_template_string
 
+TOKEN = "9071175801:AAEzQFO0tJQh0xHox3-HI8Ygwq-GQskNgYo"
+bot = telebot.TeleBot(TOKEN)
+
+# Ma'lumotlar bazasini sozlash
+def init_db():
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            first_name TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_user(user_id, first_name):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR IGNORE INTO users (user_id, first_name) VALUES (?, ?)
+    ''', (user_id, first_name))
+    conn.commit()
+    conn.close()
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name
+    save_user(user_id, user_name)
+    bot.reply_to(
+        message, 
+        f"Assalomu alaykum, {user_name}!\nSizning ma'lumotlaringiz bazaga muvaffaqiyatli saqlandi ✅"
+    )
+
+# Botni alohida oqimda (thread) ishga tushiramiz, toki u veb-saytga xalaqit bermasin
+def run_bot():
+    bot.polling(none_stop=True)
+
+# Flask veb-server qismi
 app = Flask(__name__)
 
-# Frontend (GitHub) va Backend (Render) orasidagi xavfsiz aloqani ta'minlash
-CORS(app)
-
-# 1. Gemini API Kalitini sozlash (Xavfsiz tizim)
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6Jv2Ba5yzd-mNOsw0xDSLedigmDEo56hCpVjnYUZYyMJw")
-genai.configure(api_key=GEMINI_API_KEY)
-
-# 2. O'zbekiston ta'lim muassasalari bilan bog'liq maxsus tizimli ko'rsatma (System Prompt)
-SYSTEM_INSTRUCTION = """
-Siz MuallimUz platformasining intellektual ta'lim yordamchisiz. Foydalanuvchilarga faqat O'zbekiston Respublikasining maktabgacha ta'lim, umumiy o'rta ta'lim, o'rta maxsus va oliy ta'lim muassasalari bilan bog'liq ishonchli va rasmiy ma'lumotlarni taqdim etasiz. Ma'lumotlarni tahlil qilishda faqat quyidagi rasmiy manbalar va ularga tegishli ochiq ma'lumotlar bazasiga tayanishingiz shart:
-1. O'zbekiston Respublikasi Maktabgacha va maktab ta'limi vazirligi (uzedu.uz)
-2. Oliy ta'lim, fan va innovatsiyalar vazirligi (edu.uz)
-3. Ta'lim portallari (ziyonet.uz, umail.uz)
-
-Agar foydalanuvchi ta'lim tizimiga aloqador bo'lmagan mavzularda savol bersa, ularga xushmuomalalik bilan rad javobini bering va faqat O'zbekiston ta'lim tizimi doirasida yordam bera olishingizni eslating. Javoblaringiz aniq, sodda va o'zbek tilida bo'lishi lozim.
-"""
-
-# Gemini Modelini tizimli prompt bilan sozlash
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    system_instruction=SYSTEM_INSTRUCTION
-)
-
-# 3. AI Chat Endpoint (31-qator to'liq tuzatildi)
-@app.route('/gemini-chat', methods=['POST'])
-def chat():
-    try:
-        data = request.json
-        user_message = data.get("message", "")
-        
-        if not user_message:
-            return jsonify({"reply": "Xabar bo'sh bo'lishi mumkin emas."}), 400
-        
-        # Gemini modelidan javob olish
-        response = model.generate_content(user_message)
-        
-        return jsonify({"reply": response.text})
+@app.route('/')
+def index():
+    # Bazadan oxirgi ro'yxatdan o'tgan foydalanuvchini o'qib olamiz
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT first_name FROM users ORDER BY user_id DESC LIMIT 1')
+    user = cursor.fetchone()
+    conn.close()
     
-    except Exception as e:
-        print(f"Xatolik yuz berdi: {str(e)}")
-        return jsonify({"reply": "Tizimda xatolik yuz berdi. Iltimos, keyinroq qayta urinib ko'ring."}), 500
+    user_name = user[0] if user else "Mehmon"
 
-# 4. Serverni Render.com talablariga moslab ishga tushirish qismi
+    # HTML sahifa
+    html_template = """
+    <!DOCTYPE html>
+    <html lang="uz">
+    <head>
+        <meta charset="UTF-8">
+        <title>Zamonaviy ta'lim</title>
+        <style>
+            body { font-family: Arial, sans-serif; background: #f4f7fc; text-align: center; padding-top: 50px; }
+            .card { background: white; max-width: 400px; margin: 0 auto; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+            h1 { color: #3b82f6; }
+            p { color: #555; margin-top: 15px; }
+            .btn { display: inline-block; background: #0088cc; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-top: 20px; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>Xush kelibsiz, {{ user_name }}!</h1>
+            <p>Siz Telegram botimiz orqali muvaffaqiyatli ro'yxatdan o'tdingiz va bu ma'lumot avtomatik ravishda veb-saytga chiqdi.</p>
+            <a href="https://t.me/SizningBotingiz_bot" target="_blank" class="btn">Telegram botga o'tish</a>
+        </div>
+    </body>
+    </html>
+    """
+    return render_template_string(html_template, user_name=user_name)
+
 if __name__ == '__main__':
-    # Render muhitidagi portni avtomatik aniqlash (Port: 10000 yoki ixtiyoriy)
-    port = int(os.environ.get("PORT", 5000))
-    # debug=False va host='0.0.0.0' Render serverida xatosiz ishlashni ta'minlaydi
-    app.run(debug=False, host='0.0.0.0', port=port)
+    init_db()
+    # Botni ishga tushirish
+    t = threading.Thread(target=run_bot)
+    t.daemon = True
+    t.start()
+    
+    print("Veb-server va Telegram bot ishga tushdi: http://127.0.0.1:5000")
+    # Flask serverini yoqamiz
+    app.run(debug=False, port=5000)
